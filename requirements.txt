@@ -1,0 +1,10 @@
+numpy>=2.0
+scipy>=1.17
+matplotlib>=3.10
+plotly>=6.0
+csrgraph>=0.1.28
+nodevectors>=0.2.0
+umap-learn>=0.5
+
+# optional: Gurobi integration
+# gurobipy>=13.0
