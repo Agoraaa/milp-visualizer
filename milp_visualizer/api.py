@@ -8,6 +8,8 @@ from .mps_parser import parse
 from .graph import build_variable_graph, build_constraint_graph, ExcludeSpec
 from .visualize import _visualize_variables, _visualize_constraints
 from .integrations.gurobi import _gurobi_to_variable_graph, _gurobi_to_constraint_graph
+from .integrations.highs import _highs_to_variable_graph, _highs_to_constraint_graph
+from .integrations.ortools import _ortools_to_variable_graph, _ortools_to_constraint_graph
 
 _VALID_MODES = ("variables", "constraints")
 
@@ -69,8 +71,33 @@ def visualize(
                                    max_neighbors=max_neighbors, label_nodes=label_nodes,
                                    node_colors=node_colors)
 
+    elif hasattr(source, "getLp"):  # highspy.Highs
+        if mode == "variables":
+            g, pseudo_mps = _highs_to_variable_graph(source)
+            _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
+                                 max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                 node_colors=node_colors)
+        else:
+            g = _highs_to_constraint_graph(source)
+            _visualize_constraints(g, output=output, exclude=exclude,
+                                   max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                   node_colors=node_colors)
+
+    elif hasattr(source, "NumVariables") and hasattr(source, "NumConstraints"):  # ortools pywraplp.Solver
+        if mode == "variables":
+            g, pseudo_mps = _ortools_to_variable_graph(source)
+            _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
+                                 max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                 node_colors=node_colors)
+        else:
+            g = _ortools_to_constraint_graph(source)
+            _visualize_constraints(g, output=output, exclude=exclude,
+                                   max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                   node_colors=node_colors)
+
     else:
         raise TypeError(
             f"unsupported source type {type(source).__name__!r}; "
-            "expected a file path (str/Path) or a supported solver model (gurobipy.Model)"
+            "expected a file path (str/Path) or a supported solver model "
+            "(gurobipy.Model, highspy.Highs, ortools.linear_solver.pywraplp.Solver)"
         )
