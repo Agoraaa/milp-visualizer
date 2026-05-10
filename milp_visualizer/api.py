@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .mps_parser import parse
-from .graph import build_variable_graph, build_constraint_graph
+from .graph import build_variable_graph, build_constraint_graph, ExcludeSpec
 from .visualize import _visualize_variables, _visualize_constraints
 from .integrations.gurobi import _gurobi_to_variable_graph, _gurobi_to_constraint_graph
 
@@ -17,7 +17,10 @@ def visualize(
     output: str | None = None,
     *,
     mode: str = "variables",
-    **kwargs,
+    exclude: ExcludeSpec = None,
+    max_neighbors: int | None = None,
+    label_nodes: bool | None = None,
+    node_colors: dict[str, str] | None = None,
 ) -> None:
     """Visualize a MILP model's co-occurrence structure.
 
@@ -27,10 +30,13 @@ def visualize(
             gurobipy.Model   : live Gurobi model (need not be solved)
         output: output file path — extension determines format: ".png" (matplotlib) or ".html" (Plotly interactive)
         mode: "variables" (default) or "constraints"
-        **kwargs: forwarded to the renderer —
-            max_neighbors : max edges drawn per node
-            label_nodes   : annotate node names (default: auto for <=50 nodes)
-            node_colors   : {node_name: hex_color} override
+        exclude: nodes to drop before visualization —
+            str              : exact name (treated as regex fullmatch)
+            re.Pattern       : compiled regex
+            list/set         : mix of the above
+        max_neighbors: max edges drawn per node
+        label_nodes: annotate node names (default: auto for <=50 nodes)
+        node_colors: {node_name: hex_color} override
     """
     if mode not in _VALID_MODES:
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
@@ -42,18 +48,26 @@ def visualize(
         mps = parse(source)
         if mode == "variables":
             g = build_variable_graph(mps)
-            _visualize_variables(g, model=mps, output=output, **kwargs)
+            _visualize_variables(g, model=mps, output=output, exclude=exclude,
+                                 max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                 node_colors=node_colors)
         else:
             g = build_constraint_graph(mps)
-            _visualize_constraints(g, output=output, **kwargs)
+            _visualize_constraints(g, output=output, exclude=exclude,
+                                   max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                   node_colors=node_colors)
 
     elif hasattr(source, "getConstrs"):  # gurobipy.Model
         if mode == "variables":
             g, pseudo_mps = _gurobi_to_variable_graph(source)
-            _visualize_variables(g, model=pseudo_mps, output=output, **kwargs)
+            _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
+                                 max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                 node_colors=node_colors)
         else:
             g = _gurobi_to_constraint_graph(source)
-            _visualize_constraints(g, output=output, **kwargs)
+            _visualize_constraints(g, output=output, exclude=exclude,
+                                   max_neighbors=max_neighbors, label_nodes=label_nodes,
+                                   node_colors=node_colors)
 
     else:
         raise TypeError(
