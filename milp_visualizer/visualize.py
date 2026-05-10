@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.patches as mpatches
 
-from .graph import VariableGraph, ConstraintGraph
+from .graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude, _drop_nodes
 from .embedding import embed, _top_neighbors
 from .colors import color_by_prefix, _extract_prefix, _MAX_PREFIX_COLORS
 from .render import (
@@ -85,7 +85,11 @@ def _visualize_variables(
     max_neighbors: int | None = None,
     label_nodes: bool | None = None,
     node_colors: dict[str, str] | None = None,
+    exclude: ExcludeSpec = None,
 ) -> None:
+    pred = _compile_exclude(exclude)
+    if pred is not None:
+        _drop_nodes(graph, pred)
     if graph.num_nodes == 0:
         raise ValueError("graph has no nodes")
 
@@ -132,7 +136,11 @@ def _visualize_constraints(
     max_neighbors: int | None = None,
     label_nodes: bool | None = None,
     node_colors: dict[str, str] | None = None,
+    exclude: ExcludeSpec = None,
 ) -> None:
+    pred = _compile_exclude(exclude)
+    if pred is not None:
+        _drop_nodes(graph, pred)
     if graph.num_nodes == 0:
         raise ValueError("graph has no nodes")
 

@@ -2,9 +2,45 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations
+
+ExcludeSpec = str | re.Pattern | list[str | re.Pattern] | set[str] | None
+
+
+def _compile_exclude(exclude: ExcludeSpec):
+    """Return a predicate that returns True if a node name should be excluded."""
+    if exclude is None:
+        return None
+    items = [exclude] if isinstance(exclude, (str, re.Pattern)) else list(exclude)
+    patterns = [re.compile(x) if isinstance(x, str) else x for x in items]
+
+    def should_exclude(name: str) -> bool:
+        return any(p.fullmatch(name) for p in patterns)
+
+    return should_exclude
+
+
+def _drop_nodes(graph: CooccurrenceGraph, predicate) -> None:
+    """Remove nodes matching predicate in-place."""
+    remove = {n for n in graph.nodes if predicate(n)}
+    if not remove:
+        return
+    graph.nodes -= remove
+    for n in remove:
+        graph.adj.pop(n, None)
+    for nbrs in graph.adj.values():
+        for n in remove:
+            nbrs.pop(n, None)
+    if isinstance(graph, VariableGraph):
+        for n in remove:
+            graph.constraint_count.pop(n, None)
+    elif isinstance(graph, ConstraintGraph):
+        for n in remove:
+            graph.variable_count.pop(n, None)
+            graph.constraint_types.pop(n, None)
 
 
 @dataclass
