@@ -35,7 +35,7 @@ def render_png(
     output: str,
     figsize: tuple[int, int],
     show_edges: bool,
-    label_nodes: bool,
+    label_nodes: bool | int,
     legend_patches: list,
 ) -> None:
     pos = {n: (xs[i], ys[i]) for i, n in enumerate(nodes)}
@@ -58,9 +58,16 @@ def render_png(
     ax.scatter(xs, ys, c=colors, s=sizes, zorder=2, edgecolors="white", linewidths=0.4)
 
     if label_nodes:
+        if isinstance(label_nodes, int):
+            rng = np.random.default_rng()
+            k = min(label_nodes, len(nodes))
+            label_set = {nodes[i] for i in rng.choice(len(nodes), size=k, replace=False)}
+        else:
+            label_set = set(nodes)
         for n, (x, y) in pos.items():
-            ax.annotate(n, (x, y), fontsize=6, ha="center", va="bottom",
-                        xytext=(0, 4), textcoords="offset points", zorder=3)
+            if n in label_set:
+                ax.annotate(n, (x, y), fontsize=6, ha="center", va="bottom",
+                            xytext=(0, 4), textcoords="offset points", zorder=3)
 
     if legend_patches:
         ax.legend(handles=legend_patches, loc="best", fontsize=9)

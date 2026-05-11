@@ -6,11 +6,11 @@ import math
 from collections import defaultdict
 from itertools import combinations
 
-from ..graph import VariableGraph, ConstraintGraph
+from ..graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude
 from ..mps_parser import MPS
 
 
-def _highs_to_variable_graph(model) -> tuple[VariableGraph, MPS]:
+def _highs_to_variable_graph(model, exclude: ExcludeSpec = None) -> tuple[VariableGraph, MPS]:
     lp = model.getLp()
     col_names = list(lp.col_names_)
     row_names = list(lp.row_names_)
@@ -38,11 +38,14 @@ def _highs_to_variable_graph(model) -> tuple[VariableGraph, MPS]:
         for row_idx in indices[start:end]:
             row_to_vars[row_idx].append(col_name)
 
+    pred = _compile_exclude(exclude)
     adj: dict[str, dict[str, int]] = defaultdict(dict)
     nodes: set[str] = set(col_names)
     constraint_count: dict[str, int] = {}
 
-    for vars_in_row in row_to_vars.values():
+    for row_idx, vars_in_row in row_to_vars.items():
+        if pred is not None and pred(row_names[row_idx]):
+            continue
         for var in vars_in_row:
             constraint_count[var] = constraint_count.get(var, 0) + 1
         for u, v in combinations(vars_in_row, 2):
@@ -62,7 +65,7 @@ def _highs_to_variable_graph(model) -> tuple[VariableGraph, MPS]:
     return graph, pseudo_mps
 
 
-def _highs_to_constraint_graph(model) -> ConstraintGraph:
+def _highs_to_constraint_graph(model, exclude: ExcludeSpec = None) -> ConstraintGraph:
     lp = model.getLp()
     col_names = list(lp.col_names_)
     row_names = list(lp.row_names_)
@@ -97,11 +100,14 @@ def _highs_to_constraint_graph(model) -> ConstraintGraph:
         for row_idx in indices[start:end]:
             row_to_vars[row_idx].append(col_name)
 
+    pred = _compile_exclude(exclude)
     var_to_constrs: dict[str, list[str]] = defaultdict(list)
     for row_idx, vars_in_row in row_to_vars.items():
         name = row_names[row_idx]
         variable_count[name] = len(vars_in_row)
         for var in vars_in_row:
+            if pred is not None and pred(var):
+                continue
             var_to_constrs[var].append(name)
 
     for constrs in var_to_constrs.values():

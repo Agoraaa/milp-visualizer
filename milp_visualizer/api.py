@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .mps_parser import parse
-from .graph import build_variable_graph, build_constraint_graph, ExcludeSpec
+from .graph import build_variable_graph, build_constraint_graph, ExcludeSpec, GroupSpec
 from .visualize import _visualize_variables, _visualize_constraints
 from .integrations.gurobi import _gurobi_to_variable_graph, _gurobi_to_constraint_graph
 from .integrations.highs import _highs_to_variable_graph, _highs_to_constraint_graph
@@ -21,8 +21,9 @@ def visualize(
     mode: str = "variables",
     exclude: ExcludeSpec = None,
     max_neighbors: int | None = None,
-    label_nodes: bool | None = None,
+    label_nodes: bool | int | None = None,
     node_categories: dict[str, str] | None = None,
+    groups: GroupSpec = None,
 ) -> None:
     """Visualize a MILP model's co-occurrence structure.
 
@@ -39,6 +40,8 @@ def visualize(
         max_neighbors: max edges drawn per node
         label_nodes: annotate node names (default: auto for <=50 nodes)
         node_categories: {node_name: hex_color} override
+        groups: list of str (prefix) or re.Pattern (regex) — matched nodes collapsed
+            into one super-node before embedding; super-node name = first matched node
     """
     if mode not in _VALID_MODES:
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
@@ -49,51 +52,51 @@ def visualize(
     if isinstance(source, (str, Path)):
         mps = parse(source)
         if mode == "variables":
-            g = build_variable_graph(mps)
+            g = build_variable_graph(mps, exclude=exclude)
             _visualize_variables(g, model=mps, output=output, exclude=exclude,
                                  max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                 node_categories=node_categories)
+                                 node_categories=node_categories, groups=groups)
         else:
-            g = build_constraint_graph(mps)
+            g = build_constraint_graph(mps, exclude=exclude)
             _visualize_constraints(g, output=output, exclude=exclude,
                                    max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                   node_categories=node_categories)
+                                   node_categories=node_categories, groups=groups)
 
     elif hasattr(source, "getConstrs"):  # gurobipy.Model
         if mode == "variables":
-            g, pseudo_mps = _gurobi_to_variable_graph(source)
+            g, pseudo_mps = _gurobi_to_variable_graph(source, exclude=exclude)
             _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
                                  max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                 node_categories=node_categories)
+                                 node_categories=node_categories, groups=groups)
         else:
-            g = _gurobi_to_constraint_graph(source)
+            g = _gurobi_to_constraint_graph(source, exclude=exclude)
             _visualize_constraints(g, output=output, exclude=exclude,
                                    max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                   node_categories=node_categories)
+                                   node_categories=node_categories, groups=groups)
 
     elif hasattr(source, "getLp"):  # highspy.Highs
         if mode == "variables":
-            g, pseudo_mps = _highs_to_variable_graph(source)
+            g, pseudo_mps = _highs_to_variable_graph(source, exclude=exclude)
             _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
                                  max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                 node_categories=node_categories)
+                                 node_categories=node_categories, groups=groups)
         else:
-            g = _highs_to_constraint_graph(source)
+            g = _highs_to_constraint_graph(source, exclude=exclude)
             _visualize_constraints(g, output=output, exclude=exclude,
                                    max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                   node_categories=node_categories)
+                                   node_categories=node_categories, groups=groups)
 
     elif hasattr(source, "NumVariables") and hasattr(source, "NumConstraints"):  # ortools pywraplp.Solver
         if mode == "variables":
-            g, pseudo_mps = _ortools_to_variable_graph(source)
+            g, pseudo_mps = _ortools_to_variable_graph(source, exclude=exclude)
             _visualize_variables(g, model=pseudo_mps, output=output, exclude=exclude,
                                  max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                 node_categories=node_categories)
+                                 node_categories=node_categories, groups=groups)
         else:
-            g = _ortools_to_constraint_graph(source)
+            g = _ortools_to_constraint_graph(source, exclude=exclude)
             _visualize_constraints(g, output=output, exclude=exclude,
                                    max_neighbors=max_neighbors, label_nodes=label_nodes,
-                                   node_categories=node_categories)
+                                   node_categories=node_categories, groups=groups)
 
     else:
         raise TypeError(

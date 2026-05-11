@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections import defaultdict
 from itertools import combinations
 
-from ..graph import VariableGraph, ConstraintGraph
+from ..graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude
 from ..mps_parser import MPS
 
 
-def _ortools_to_variable_graph(solver) -> tuple[VariableGraph, MPS]:
+def _ortools_to_variable_graph(solver, exclude: ExcludeSpec = None) -> tuple[VariableGraph, MPS]:
     variables = solver.variables()
     constraints = solver.constraints()
+    pred = _compile_exclude(exclude)
 
     binary_vars: set[str] = set()
     integer_vars: set[str] = set()
@@ -26,6 +27,8 @@ def _ortools_to_variable_graph(solver) -> tuple[VariableGraph, MPS]:
     constraint_count: dict[str, int] = {}
 
     for constr in constraints:
+        if pred is not None and pred(constr.name()):
+            continue
         vars_in_constr = [v.name() for v in variables if constr.GetCoefficient(v) != 0.0]
         for name in vars_in_constr:
             constraint_count[name] = constraint_count.get(name, 0) + 1
@@ -42,9 +45,10 @@ def _ortools_to_variable_graph(solver) -> tuple[VariableGraph, MPS]:
     return graph, pseudo_mps
 
 
-def _ortools_to_constraint_graph(solver) -> ConstraintGraph:
+def _ortools_to_constraint_graph(solver, exclude: ExcludeSpec = None) -> ConstraintGraph:
     variables = solver.variables()
     constraints = solver.constraints()
+    pred = _compile_exclude(exclude)
 
     adj: dict[str, dict[str, int]] = defaultdict(dict)
     nodes: set[str] = {c.name() for c in constraints}
@@ -69,6 +73,8 @@ def _ortools_to_constraint_graph(solver) -> ConstraintGraph:
         vars_in_constr = [v.name() for v in variables if constr.GetCoefficient(v) != 0.0]
         variable_count[name] = len(vars_in_constr)
         for var in vars_in_constr:
+            if pred is not None and pred(var):
+                continue
             var_to_constrs[var].append(name)
 
     for constrs in var_to_constrs.values():

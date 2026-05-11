@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections import defaultdict
 from itertools import combinations
 
-from ..graph import VariableGraph, ConstraintGraph
+from ..graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude
 from ..mps_parser import MPS
 
 
-def _gurobi_to_variable_graph(gurobi_model) -> tuple[VariableGraph, MPS]:
+def _gurobi_to_variable_graph(gurobi_model, exclude: ExcludeSpec = None) -> tuple[VariableGraph, MPS]:
     """Return (VariableGraph, pseudo-MPS) built from a live Gurobi model."""
     gurobi_model.update()
+    pred = _compile_exclude(exclude)
 
     gvars = gurobi_model.getVars()
     var_names = [v.VarName for v in gvars]
@@ -29,6 +30,8 @@ def _gurobi_to_variable_graph(gurobi_model) -> tuple[VariableGraph, MPS]:
     constraint_count: dict[str, int] = {}
 
     for constr in gurobi_model.getConstrs():
+        if pred is not None and pred(constr.ConstrName):
+            continue
         row = gurobi_model.getRow(constr)
         vars_in_row = [row.getVar(i).VarName for i in range(row.size())]
         for var in vars_in_row:
@@ -70,9 +73,10 @@ def _gurobi_to_variable_graph(gurobi_model) -> tuple[VariableGraph, MPS]:
     return graph, pseudo_mps
 
 
-def _gurobi_to_constraint_graph(gurobi_model) -> ConstraintGraph:
+def _gurobi_to_constraint_graph(gurobi_model, exclude: ExcludeSpec = None) -> ConstraintGraph:
     """Return ConstraintGraph built from a live Gurobi model."""
     gurobi_model.update()
+    pred = _compile_exclude(exclude)
 
     _sense_map = {"<": "L", ">": "G", "=": "E"}
     adj: dict[str, dict[str, int]] = defaultdict(dict)
@@ -89,6 +93,8 @@ def _gurobi_to_constraint_graph(gurobi_model) -> ConstraintGraph:
         var_names = [row.getVar(i).VarName for i in range(row.size())]
         variable_count[name] = len(var_names)
         for var in var_names:
+            if pred is not None and pred(var):
+                continue
             var_to_constrs[var].append(name)
 
     for constrs in var_to_constrs.values():

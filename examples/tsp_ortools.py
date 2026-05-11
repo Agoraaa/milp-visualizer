@@ -82,7 +82,7 @@ def _node_categories(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cities", type=int, default=32)
+    parser.add_argument("--cities", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -111,9 +111,10 @@ def main() -> None:
 
         s = min(tours, key=len)
         current_vars = {f"x_{i}_{j}" for i in s for j in s if i != j}
-        visualize(solver, f"visualizations/tsp_iter_{cut_idx:02d}.html",
-                  mode="variables", label_nodes=False,
-                  node_categories=_node_categories(n, x, set(s), prev_sec_vars))
+        if cut_idx > 2:
+            visualize(solver, f"visualizations/tsp_iter_{cut_idx:02d}.html",
+                    mode="variables", label_nodes=False,
+                    node_categories=_node_categories(n, x, set(s), prev_sec_vars))
 
         cut = solver.Constraint(0.0, len(s) - 1.0, f"sec_{cut_idx}_{min(s)}")
         for i in s:
