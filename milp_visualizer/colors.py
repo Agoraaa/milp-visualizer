@@ -21,6 +21,19 @@ def _generate_palette(n: int) -> list[str]:
     return [mcolors.to_hex(cmap(i / max(n, 1))) for i in range(n)]
 
 
+def color_by_category(
+    nodes: list[str],
+    node_to_category: dict[str, str],
+    default: str = "#BDBDBD",
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Assign colors to nodes by category label. Returns (node→hex, category→hex)."""
+    categories = sorted({node_to_category[n] for n in nodes if n in node_to_category})
+    palette = _generate_palette(len(categories))
+    cat_colors = dict(zip(categories, palette))
+    color_map = {n: cat_colors.get(node_to_category.get(n, ""), default) for n in nodes}
+    return color_map, cat_colors
+
+
 def color_by_prefix(
     nodes: list[str] | set[str],
     palette: dict[str, str] | None = None,

@@ -38,11 +38,7 @@ def _ortools_to_variable_graph(solver) -> tuple[VariableGraph, MPS]:
                 adj[v][u] = 1
 
     graph = VariableGraph(adj=adj, nodes=nodes, constraint_count=constraint_count)
-    pseudo_mps = MPS(
-        name=solver.Name(),
-        binary_vars=binary_vars,
-        integer_vars=integer_vars,
-    )
+    pseudo_mps = MPS(binary_vars=binary_vars, integer_vars=integer_vars)
     return graph, pseudo_mps
 
 
@@ -89,5 +85,4 @@ def _ortools_to_constraint_graph(solver) -> ConstraintGraph:
         nodes=nodes,
         variable_count=variable_count,
         constraint_types=constraint_types,
-        name=solver.Name(),
     )

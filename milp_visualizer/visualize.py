@@ -7,7 +7,7 @@ import matplotlib.patches as mpatches
 
 from .graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude, _drop_nodes
 from .embedding import embed, _top_neighbors
-from .colors import color_by_prefix, _extract_prefix, _MAX_PREFIX_COLORS
+from .colors import color_by_prefix, color_by_category, _extract_prefix, _MAX_PREFIX_COLORS
 from .render import (
     _VAR_COLORS,
     _CONSTRAINT_COLORS,
@@ -44,10 +44,10 @@ def _legend_from_type_colors(label_color_map: dict[str, str]) -> tuple[list, lis
     return patches, items
 
 
-def _resolve_colors_variables(nodes, model, node_colors):
-    if node_colors is not None:
-        color_map = {n: node_colors.get(n, _VAR_COLORS["continuous"]) for n in nodes}
-        return color_map, *_legend_from_colors(nodes, color_map)
+def _resolve_colors_variables(nodes, model, node_categories):
+    if node_categories is not None:
+        color_map, cat_colors = color_by_category(nodes, node_categories)
+        return color_map, *_legend_from_type_colors(cat_colors)
     n_prefixes = len({_extract_prefix(n) for n in nodes})
     if n_prefixes <= _MAX_PREFIX_COLORS:
         color_map = color_by_prefix(nodes)
@@ -61,10 +61,10 @@ def _resolve_colors_variables(nodes, model, node_colors):
     return color_map, *_legend_from_type_colors({k.capitalize(): v for k, v in _VAR_COLORS.items()})
 
 
-def _resolve_colors_constraints(nodes, graph, node_colors):
-    if node_colors is not None:
-        color_map = {n: node_colors.get(n, _CONSTRAINT_COLORS["L"]) for n in nodes}
-        return color_map, *_legend_from_colors(nodes, color_map)
+def _resolve_colors_constraints(nodes, graph, node_categories):
+    if node_categories is not None:
+        color_map, cat_colors = color_by_category(nodes, node_categories)
+        return color_map, *_legend_from_type_colors(cat_colors)
     n_prefixes = len({_extract_prefix(n) for n in nodes})
     if n_prefixes <= _MAX_PREFIX_COLORS:
         color_map = color_by_prefix(nodes)
@@ -84,7 +84,7 @@ def _visualize_variables(
     output: str = "variable_graph.html",
     max_neighbors: int | None = None,
     label_nodes: bool | None = None,
-    node_colors: dict[str, str] | None = None,
+    node_categories: dict[str, str] | None = None,
     exclude: ExcludeSpec = None,
 ) -> None:
     pred = _compile_exclude(exclude)
@@ -96,7 +96,7 @@ def _visualize_variables(
     coords, nodes = embed(graph)
     xs, ys = coords[:, 0], coords[:, 1]
 
-    color_map, legend_patches, legend_items = _resolve_colors_variables(nodes, model, node_colors)
+    color_map, legend_patches, legend_items = _resolve_colors_variables(nodes, model, node_categories)
     colors = [color_map[n] for n in nodes]
 
     if graph.constraint_count:
@@ -135,7 +135,7 @@ def _visualize_constraints(
     output: str = "constraint_graph.html",
     max_neighbors: int | None = None,
     label_nodes: bool | None = None,
-    node_colors: dict[str, str] | None = None,
+    node_categories: dict[str, str] | None = None,
     exclude: ExcludeSpec = None,
 ) -> None:
     pred = _compile_exclude(exclude)
@@ -147,7 +147,7 @@ def _visualize_constraints(
     coords, nodes = embed(graph)
     xs, ys = coords[:, 0], coords[:, 1]
 
-    color_map, legend_patches, legend_items = _resolve_colors_constraints(nodes, graph, node_colors)
+    color_map, legend_patches, legend_items = _resolve_colors_constraints(nodes, graph, node_categories)
     colors = [color_map[n] for n in nodes]
 
     counts = np.array([graph.variable_count.get(n, 0) for n in nodes], dtype=float)
