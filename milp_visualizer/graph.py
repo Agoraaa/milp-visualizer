@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import scipy.sparse as sp
 
-ExcludeSpec = str | re.Pattern | list[str | re.Pattern] | set[str] | None
-GroupSpec = list[str | re.Pattern] | None
+ExcludeSpec = str | list[str] | set[str] | None
+GroupSpec = list[str] | None
 
 _EMPTY = sp.csr_matrix((0, 0))
 
@@ -26,18 +26,19 @@ _EMPTY = sp.csr_matrix((0, 0))
 def _compile_exclude(exclude: ExcludeSpec):
     """Return a predicate that returns True if a node name should be excluded.
 
-    Plain str: prefix match (startswith). re.Pattern: fullmatch.
+    Plain str without '*'/'?': prefix match (startswith).
+    Plain str with '*'/'?': glob match (see _glob_to_pattern) — any match excludes.
     """
     if exclude is None:
         return None
-    items = [exclude] if isinstance(exclude, (str, re.Pattern)) else list(exclude)
-    prefixes = [x for x in items if isinstance(x, str)]
-    patterns = [x for x in items if isinstance(x, re.Pattern)]
+    items = [exclude] if isinstance(exclude, str) else list(exclude)
+    prefixes = [x for x in items if _glob_to_pattern(x) is None]
+    patterns = [_glob_to_pattern(x) for x in items if _glob_to_pattern(x) is not None]
 
     def should_exclude(name: str) -> bool:
         return (
             any(name.startswith(p) for p in prefixes)
-            or any(p.fullmatch(name) for p in patterns)
+            or any(p.search(name) for p in patterns)
         )
 
     return should_exclude
@@ -117,60 +118,37 @@ def _glob_to_pattern(spec: str) -> re.Pattern | None:
     return re.compile("^" + pattern)
 
 
-def _assign_groups(nodes: set[str], groups: list[str | re.Pattern]) -> dict[str, str]:
+def _assign_groups(nodes: set[str], groups: list[str]) -> dict[str, str]:
     """Map each node to a super-node name. First-match wins; unmatched map to themselves.
 
-    Plain str without '*': prefix match → one group.
-    Plain str with '*': each '*' captures an integer; partition by captured tuple.
-    Regex without capture groups: all matches → one group.
-    Regex with capture groups: partitioned by captured tuple → one group per unique capture.
+    Plain str without '*'/'?': prefix match → one group.
+    Plain str with '*'/'?': each '*' captures an integer; partition by captured tuple
+        ('?' matches any integer but doesn't partition on it).
     Super-node name = alphabetically first member of each group.
     """
     node_to_group: dict[str, str] = {}
     for spec in groups:
-        if isinstance(spec, str):
-            pattern = _glob_to_pattern(spec)
-            if pattern is not None:
-                buckets: dict[tuple, list[str]] = defaultdict(list)
-                for n in nodes:
-                    if n in node_to_group:
-                        continue
-                    m = pattern.search(n)
-                    if m:
-                        buckets[m.groups()].append(n)
-                for bucket in buckets.values():
-                    bucket.sort()
-                    group_name = bucket[0]
-                    for n in bucket:
-                        node_to_group[n] = group_name
-            else:
-                matched = sorted(n for n in nodes if n.startswith(spec) and n not in node_to_group)
-                if not matched:
+        pattern = _glob_to_pattern(spec)
+        if pattern is not None:
+            buckets: dict[tuple, list[str]] = defaultdict(list)
+            for n in nodes:
+                if n in node_to_group:
                     continue
-                group_name = matched[0]
-                for n in matched:
+                m = pattern.search(n)
+                if m:
+                    buckets[m.groups()].append(n)
+            for bucket in buckets.values():
+                bucket.sort()
+                group_name = bucket[0]
+                for n in bucket:
                     node_to_group[n] = group_name
         else:
-            if spec.groups:
-                buckets: dict[tuple, list[str]] = defaultdict(list)
-                for n in nodes:
-                    if n in node_to_group:
-                        continue
-                    m = spec.search(n)
-                    if m:
-                        buckets[m.groups()].append(n)
-                for bucket in buckets.values():
-                    bucket.sort()
-                    group_name = bucket[0]
-                    for n in bucket:
-                        node_to_group[n] = group_name
-            else:
-                matched = sorted(n for n in nodes if spec.search(n) and n not in node_to_group)
-                if not matched:
-                    continue
-                group_name = matched[0]
-                for n in matched:
-                    node_to_group[n] = group_name
+            matched = sorted(n for n in nodes if n.startswith(spec) and n not in node_to_group)
+            if not matched:
+                continue
+            group_name = matched[0]
+            for n in matched:
+                node_to_group[n] = group_name
     for n in nodes:
         if n not in node_to_group:
             node_to_group[n] = n
@@ -189,7 +167,7 @@ def _drop_from_incidence(B: sp.csr_matrix, row_names: list[str], col_names: list
     return B, row_names, col_names
 
 
-def _group_matrix(names: list[str], groups: list[str | re.Pattern]):
+def _group_matrix(names: list[str], groups: list[str]):
     """Build a names x supernodes indicator matrix for merging by group."""
     node_to_group = _assign_groups(set(names), groups)
     supernodes = sorted(set(node_to_group.values()))

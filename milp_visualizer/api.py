@@ -37,14 +37,14 @@ def visualize(
         output: output file path — extension determines format: ".png" (matplotlib) or ".html" (Plotly interactive)
         mode: "variables" (default) or "constraints"
         exclude: nodes to drop before graph construction —
-            str              : exact name (treated as regex fullmatch)
-            re.Pattern       : compiled regex
+            str              : prefix match, or glob ('*'/'?') if it contains either
             list/set         : mix of the above
         max_neighbors: max edges drawn per node
         label_nodes: annotate node names (default: auto for <=50 nodes)
         node_categories: {node_name: hex_color} override
-        groups: list of str (prefix) or re.Pattern (regex) — matched nodes collapsed
-            into one super-node before embedding; super-node name = first matched node
+        groups: list of str — prefix match, or glob ('*'/'?') to partition by captured
+            integer — matched nodes collapsed into one super-node before embedding;
+            super-node name = first matched node
     """
     if mode not in _VALID_MODES:
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
