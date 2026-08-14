@@ -10,42 +10,23 @@ import scipy.sparse as sp
 import csrgraph as cg
 import nodevectors
 
+from .graph import CooccurrenceGraph, _top_neighbors_sparse
+
 
 def _to_csrgraph(graph) -> tuple[cg.csrgraph, list[str]]:
-    nodes = sorted(graph.nodes)
-    idx = {n: i for i, n in enumerate(nodes)}
-    n = len(nodes)
-
-    rows, cols, data = [], [], []
-    for u, nbrs in graph.adj.items():
-        for v, w in nbrs.items():
-            rows.append(idx[u])
-            cols.append(idx[v])
-            data.append(float(w))
-
-    mat = sp.csr_matrix(
-        (data, (rows, cols)) if data else ([], ([], [])),
-        shape=(n, n),
-        dtype=np.float32,
-    )
-    return cg.csrgraph(mat, nodenames=nodes), nodes
+    return cg.csrgraph(graph.A.astype(np.float32), nodenames=graph.node_list), graph.node_list
 
 
-def _top_neighbors(adj: dict, k: int) -> dict:
-    """Keep only the k heaviest neighbors per node."""
-    result = {}
-    for u, nbrs in adj.items():
-        if len(nbrs) <= k:
-            result[u] = nbrs
-        else:
-            result[u] = dict(sorted(nbrs.items(), key=lambda x: x[1], reverse=True)[:k])
-    return result
+def _top_neighbors(graph, k: int) -> dict[str, dict[str, int]]:
+    """Keep only the k heaviest neighbors per node, sparse throughout — dict only at the end."""
+    pruned = _top_neighbors_sparse(graph.A, k)
+    return CooccurrenceGraph(A=pruned, node_list=graph.node_list).to_adj()
 
 
 def embed_raw(graph, n_components: int = 16) -> tuple[np.ndarray, list[str]]:
     """Embed graph nodes via GGVec only — returns high-dimensional coordinates.
 
-    Returns (coords array of shape (n_nodes, n_components), sorted node name list).
+    Returns (coords array of shape (n_nodes, n_components), node name list).
     Useful for custom downstream analysis (clustering, custom projection, etc.).
     """
     G, nodes = _to_csrgraph(graph)
@@ -61,21 +42,10 @@ def _spectral_embed(graph) -> tuple[np.ndarray, list[str]]:
 
     Used for small or near-complete graphs where GGVec random walks don't converge.
     """
-    nodes = sorted(graph.nodes)
+    nodes = graph.node_list
     n = len(nodes)
-    idx = {nd: i for i, nd in enumerate(nodes)}
+    A = graph.A.astype(np.float64)
 
-    rows, cols, data = [], [], []
-    for u, nbrs in graph.adj.items():
-        for v, w in nbrs.items():
-            rows.append(idx[u])
-            cols.append(idx[v])
-            data.append(float(w))
-
-    A = sp.csr_matrix(
-        (data, (rows, cols)) if data else ([], ([], [])),
-        shape=(n, n), dtype=np.float64,
-    )
     degree = np.array(A.sum(axis=1)).flatten()
     degree[degree == 0] = 1.0
     D_inv_sqrt = sp.diags(1.0 / np.sqrt(degree))
@@ -101,7 +71,7 @@ def embed(graph, n_components: int = 16) -> tuple[np.ndarray, list[str]]:
 
     Uses spectral embedding for small graphs (< _SPECTRAL_THRESHOLD nodes),
     GGVec + UMAP otherwise.
-    Returns (coords array of shape (n_nodes, 2), sorted node name list).
+    Returns (coords array of shape (n_nodes, 2), node name list).
     """
     if graph.num_nodes < _SPECTRAL_THRESHOLD:
         return _spectral_embed(graph)

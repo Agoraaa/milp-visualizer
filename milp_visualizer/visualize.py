@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.patches as mpatches
 
-from .graph import VariableGraph, ConstraintGraph, ExcludeSpec, GroupSpec, _compile_exclude, _drop_nodes, collapse_groups
+from .graph import VariableGraph, ConstraintGraph
 from .embedding import embed, _top_neighbors
 from .colors import color_by_prefix, color_by_category, _extract_prefix, _MAX_PREFIX_COLORS
 from .render import (
@@ -85,16 +85,9 @@ def _visualize_variables(
     max_neighbors: int | None = None,
     label_nodes: bool | int | None = None,
     node_categories: dict[str, str] | None = None,
-    exclude: ExcludeSpec = None,
-    groups: GroupSpec = None,
 ) -> None:
-    pred = _compile_exclude(exclude)
-    if pred is not None:
-        _drop_nodes(graph, pred)
     if graph.num_nodes == 0:
         raise ValueError("graph has no nodes")
-    if groups is not None:
-        graph = collapse_groups(graph, groups)
 
     coords, nodes = embed(graph)
     xs, ys = coords[:, 0], coords[:, 1]
@@ -105,22 +98,24 @@ def _visualize_variables(
     if graph.constraint_count:
         counts = np.array([graph.constraint_count.get(n, 0) for n in nodes], dtype=float)
     else:
-        counts = np.array([sum(graph.adj.get(n, {}).values()) for n in nodes], dtype=float)
+        counts = np.asarray(graph.A.sum(axis=1)).flatten().astype(float)
     max_count = counts.max() if counts.max() > 0 else 1
     sizes = 30 + 120 * (counts / max_count)
 
     name = (model.name if model else None) or "MILP"
     title = f"{name} — variable co-occurrence (GGVec + UMAP)"
-    draw_adj = _top_neighbors(graph.adj, max_neighbors) if max_neighbors is not None else graph.adj
+    draw_adj = _top_neighbors(graph, max_neighbors) if max_neighbors is not None else graph.to_adj()
     auto_label = label_nodes if label_nodes is not None else (True if graph.num_nodes <= 50 else False)
 
     if output.endswith(".html"):
+        degree = np.diff(graph.A.indptr)
+        node_degree = dict(zip(graph.node_list, degree))
         hover = [
             (
                 f"<b>{n}</b><br>"
                 f"type: {_var_type(n, model)}<br>"
                 f"constraints: {int(counts[i])}<br>"
-                f"neighbors: {len(graph.adj.get(n, {}))}"
+                f"neighbors: {node_degree.get(n, 0)}"
             )
             for i, n in enumerate(nodes)
         ]
@@ -139,16 +134,9 @@ def _visualize_constraints(
     max_neighbors: int | None = None,
     label_nodes: bool | int | None = None,
     node_categories: dict[str, str] | None = None,
-    exclude: ExcludeSpec = None,
-    groups: GroupSpec = None,
 ) -> None:
-    pred = _compile_exclude(exclude)
-    if pred is not None:
-        _drop_nodes(graph, pred)
     if graph.num_nodes == 0:
         raise ValueError("graph has no nodes")
-    if groups is not None:
-        graph = collapse_groups(graph, groups)
 
     coords, nodes = embed(graph)
     xs, ys = coords[:, 0], coords[:, 1]
@@ -162,16 +150,18 @@ def _visualize_constraints(
 
     name = getattr(graph, "name", None) or "MILP"
     title = f"{name} — constraint co-occurrence (GGVec + UMAP)"
-    draw_adj = _top_neighbors(graph.adj, max_neighbors) if max_neighbors is not None else graph.adj
+    draw_adj = _top_neighbors(graph, max_neighbors) if max_neighbors is not None else graph.to_adj()
     auto_label = label_nodes if label_nodes is not None else (True if graph.num_nodes <= 50 else False)
 
     if output.endswith(".html"):
+        degree = np.diff(graph.A.indptr)
+        node_degree = dict(zip(graph.node_list, degree))
         hover = [
             (
                 f"<b>{n}</b><br>"
                 f"type: {_CONSTRAINT_TYPE_LABELS.get(graph.constraint_types.get(n, ''), n)}<br>"
                 f"variables: {int(counts[i])}<br>"
-                f"neighbors: {len(graph.adj.get(n, {}))}"
+                f"neighbors: {node_degree.get(n, 0)}"
             )
             for i, n in enumerate(nodes)
         ]

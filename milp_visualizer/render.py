@@ -58,7 +58,7 @@ def render_png(
     ax.scatter(xs, ys, c=colors, s=sizes, zorder=2, edgecolors="white", linewidths=0.4)
 
     if label_nodes:
-        if isinstance(label_nodes, int):
+        if isinstance(label_nodes, int) and not isinstance(label_nodes, bool):
             rng = np.random.default_rng()
             k = min(label_nodes, len(nodes))
             label_set = {nodes[i] for i in rng.choice(len(nodes), size=k, replace=False)}

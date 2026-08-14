@@ -71,7 +71,7 @@ def parse(path: str | Path) -> MPS:
                     model.objective = row_name
 
             elif section == "COLUMNS":
-                if tokens[0] == "MARKER":
+                if len(tokens) >= 2 and tokens[1].strip("'") == "MARKER":
                     marker_type = tokens[-1].strip("'")
                     in_integer_block = marker_type == "INTORG"
                     continue

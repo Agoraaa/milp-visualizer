@@ -1,18 +1,52 @@
-"""OR-Tools model integration: build co-occurrence graphs from pywraplp Solver models."""
+"""OR-Tools model integration: build co-occurrence graphs from pywraplp Solver models.
+
+pywraplp has no bulk "vars in constraint" API — building B still costs
+O(variables x constraints) via GetCoefficient per pair, same as before. What
+changes is that this now only builds the incidence matrix; drop/group/matmul
+are handled by the shared sparse builders in graph.py.
+"""
 
 from __future__ import annotations
 
-from collections import defaultdict
-from itertools import combinations
+import scipy.sparse as sp
 
-from ..graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude
+from ..graph import (
+    VariableGraph,
+    ConstraintGraph,
+    ExcludeSpec,
+    GroupSpec,
+    build_variable_graph_from_incidence,
+    build_constraint_graph_from_incidence,
+)
 from ..mps_parser import MPS
 
 
-def _ortools_to_variable_graph(solver, exclude: ExcludeSpec = None) -> tuple[VariableGraph, MPS]:
+def _ortools_incidence(solver) -> tuple[sp.csr_matrix, list, list[str], list[str]]:
     variables = solver.variables()
     constraints = solver.constraints()
-    pred = _compile_exclude(exclude)
+    var_names = [v.name() for v in variables]
+    constr_names = [c.name() for c in constraints]
+    col_idx = {n: j for j, n in enumerate(var_names)}
+
+    rows, cols, data = [], [], []
+    for i, constr in enumerate(constraints):
+        for v in variables:
+            if constr.GetCoefficient(v) != 0.0:
+                rows.append(i)
+                cols.append(col_idx[v.name()])
+                data.append(1.0)
+    B = sp.csr_matrix(
+        (data, (rows, cols)) if data else ([], ([], [])),
+        shape=(len(constraints), len(var_names)),
+    )
+    return B, constraints, constr_names, var_names
+
+
+def _ortools_to_variable_graph(
+    solver, exclude: ExcludeSpec = None, groups: GroupSpec = None
+) -> tuple[VariableGraph, MPS]:
+    variables = solver.variables()
+    B, _constraints, constr_names, var_names = _ortools_incidence(solver)
 
     binary_vars: set[str] = set()
     integer_vars: set[str] = set()
@@ -22,39 +56,17 @@ def _ortools_to_variable_graph(solver, exclude: ExcludeSpec = None) -> tuple[Var
             if v.lb() == 0.0 and v.ub() == 1.0:
                 binary_vars.add(v.name())
 
-    adj: dict[str, dict[str, int]] = defaultdict(dict)
-    nodes: set[str] = {v.name() for v in variables}
-    constraint_count: dict[str, int] = {}
-
-    for constr in constraints:
-        if pred is not None and pred(constr.name()):
-            continue
-        vars_in_constr = [v.name() for v in variables if constr.GetCoefficient(v) != 0.0]
-        for name in vars_in_constr:
-            constraint_count[name] = constraint_count.get(name, 0) + 1
-        for u, v in combinations(vars_in_constr, 2):
-            if v in adj[u]:
-                adj[u][v] += 1
-                adj[v][u] += 1
-            else:
-                adj[u][v] = 1
-                adj[v][u] = 1
-
-    graph = VariableGraph(adj=adj, nodes=nodes, constraint_count=constraint_count)
+    graph = build_variable_graph_from_incidence(B, constr_names, var_names, exclude=exclude, groups=groups)
     pseudo_mps = MPS(binary_vars=binary_vars, integer_vars=integer_vars)
     return graph, pseudo_mps
 
 
-def _ortools_to_constraint_graph(solver, exclude: ExcludeSpec = None) -> ConstraintGraph:
-    variables = solver.variables()
-    constraints = solver.constraints()
-    pred = _compile_exclude(exclude)
+def _ortools_to_constraint_graph(
+    solver, exclude: ExcludeSpec = None, groups: GroupSpec = None
+) -> ConstraintGraph:
+    B, constraints, constr_names, var_names = _ortools_incidence(solver)
 
-    adj: dict[str, dict[str, int]] = defaultdict(dict)
-    nodes: set[str] = {c.name() for c in constraints}
-    variable_count: dict[str, int] = {}
     constraint_types: dict[str, str] = {}
-
     for constr in constraints:
         name = constr.name()
         lo, hi = constr.lb(), constr.ub()
@@ -67,28 +79,6 @@ def _ortools_to_constraint_graph(solver, exclude: ExcludeSpec = None) -> Constra
         else:
             constraint_types[name] = "L"
 
-    var_to_constrs: dict[str, list[str]] = defaultdict(list)
-    for constr in constraints:
-        name = constr.name()
-        vars_in_constr = [v.name() for v in variables if constr.GetCoefficient(v) != 0.0]
-        variable_count[name] = len(vars_in_constr)
-        for var in vars_in_constr:
-            if pred is not None and pred(var):
-                continue
-            var_to_constrs[var].append(name)
-
-    for constrs in var_to_constrs.values():
-        for u, v in combinations(constrs, 2):
-            if v in adj[u]:
-                adj[u][v] += 1
-                adj[v][u] += 1
-            else:
-                adj[u][v] = 1
-                adj[v][u] = 1
-
-    return ConstraintGraph(
-        adj=adj,
-        nodes=nodes,
-        variable_count=variable_count,
-        constraint_types=constraint_types,
+    return build_constraint_graph_from_incidence(
+        B, constr_names, var_names, constraint_types, exclude=exclude, groups=groups,
     )

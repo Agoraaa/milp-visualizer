@@ -1,14 +1,26 @@
-"""Graph data structures for MILP co-occurrence graphs."""
+"""Graph data structures for MILP co-occurrence graphs — sparse-matrix native.
+
+A CooccurrenceGraph holds its adjacency as a scipy sparse CSR matrix `A` plus an
+index-ordered `node_list`. Nothing before rendering ever materializes a dict —
+exclude/group filtering happens on the constraint x variable incidence matrix
+`B` before the co-occurrence matmul (Bᵀ@B or B@Bᵀ), and pruning (`_top_neighbors`)
+runs on `A` directly. A dict-of-dicts view (`to_adj`) is built once, only at
+render time, from the smallest the matrix will ever be.
+"""
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from itertools import combinations
+
+import numpy as np
+import scipy.sparse as sp
 
 ExcludeSpec = str | re.Pattern | list[str | re.Pattern] | set[str] | None
 GroupSpec = list[str | re.Pattern] | None
+
+_EMPTY = sp.csr_matrix((0, 0))
 
 
 def _compile_exclude(exclude: ExcludeSpec):
@@ -31,44 +43,42 @@ def _compile_exclude(exclude: ExcludeSpec):
     return should_exclude
 
 
-def _drop_nodes(graph: CooccurrenceGraph, predicate) -> None:
-    """Remove nodes matching predicate in-place."""
-    remove = {n for n in graph.nodes if predicate(n)}
-    if not remove:
-        return
-    graph.nodes -= remove
-    for n in remove:
-        graph.adj.pop(n, None)
-    for nbrs in graph.adj.values():
-        for n in remove:
-            nbrs.pop(n, None)
-    if isinstance(graph, VariableGraph):
-        for n in remove:
-            graph.constraint_count.pop(n, None)
-    elif isinstance(graph, ConstraintGraph):
-        for n in remove:
-            graph.variable_count.pop(n, None)
-            graph.constraint_types.pop(n, None)
-
-
 @dataclass
 class CooccurrenceGraph:
-    adj: dict[str, dict[str, int]] = field(default_factory=lambda: defaultdict(dict))
-    nodes: set[str] = field(default_factory=set)
+    A: sp.csr_matrix = field(default_factory=lambda: _EMPTY)
+    node_list: list[str] = field(default_factory=list)
 
-    def neighbors(self, node: str) -> dict[str, int]:
-        return self.adj.get(node, {})
-
-    def weight(self, u: str, v: str) -> int:
-        return self.adj.get(u, {}).get(v, 0)
+    @property
+    def nodes(self) -> set[str]:
+        return set(self.node_list)
 
     @property
     def num_nodes(self) -> int:
-        return len(self.nodes)
+        return len(self.node_list)
 
     @property
     def num_edges(self) -> int:
-        return sum(len(nbrs) for nbrs in self.adj.values()) // 2
+        return self.A.nnz // 2
+
+    def neighbors(self, node: str) -> dict[str, int]:
+        try:
+            i = self.node_list.index(node)
+        except ValueError:
+            return {}
+        row = self.A.getrow(i).tocoo()
+        return {self.node_list[j]: int(w) for j, w in zip(row.col, row.data) if w}
+
+    def weight(self, u: str, v: str) -> int:
+        return self.neighbors(u).get(v, 0)
+
+    def to_adj(self) -> dict[str, dict[str, int]]:
+        """Materialize dict-of-dicts adjacency — render-time convenience only."""
+        coo = self.A.tocoo()
+        adj: dict[str, dict[str, int]] = defaultdict(dict)
+        for i, j, w in zip(coo.row, coo.col, coo.data):
+            if w:
+                adj[self.node_list[i]][self.node_list[j]] = int(w)
+        return adj
 
 
 @dataclass
@@ -121,7 +131,6 @@ def _assign_groups(nodes: set[str], groups: list[str | re.Pattern]) -> dict[str,
         if isinstance(spec, str):
             pattern = _glob_to_pattern(spec)
             if pattern is not None:
-                # glob with captures — reuse regex capture-group path
                 buckets: dict[tuple, list[str]] = defaultdict(list)
                 for n in nodes:
                     if n in node_to_group:
@@ -143,7 +152,6 @@ def _assign_groups(nodes: set[str], groups: list[str | re.Pattern]) -> dict[str,
                     node_to_group[n] = group_name
         else:
             if spec.groups:
-                # partition by captured tuple
                 buckets: dict[tuple, list[str]] = defaultdict(list)
                 for n in nodes:
                     if n in node_to_group:
@@ -169,114 +177,147 @@ def _assign_groups(nodes: set[str], groups: list[str | re.Pattern]) -> dict[str,
     return node_to_group
 
 
-def collapse_groups(graph: CooccurrenceGraph, groups: list[str | re.Pattern]) -> CooccurrenceGraph:
-    """Collapse each group of matching nodes into one super-node before embedding.
+def _drop_from_incidence(B: sp.csr_matrix, row_names: list[str], col_names: list[str], pred):
+    """Drop rows/columns whose name matches pred, before any matmul."""
+    if pred is None:
+        return B, row_names, col_names
+    row_keep = np.array([not pred(n) for n in row_names], dtype=bool)
+    col_keep = np.array([not pred(n) for n in col_names], dtype=bool)
+    B = B[row_keep][:, col_keep]
+    row_names = [n for n, keep in zip(row_names, row_keep) if keep]
+    col_names = [n for n, keep in zip(col_names, col_keep) if keep]
+    return B, row_names, col_names
 
-    Super-node name = alphabetically first matched node. Intra-group edges dropped;
-    inter-group edge weights summed over all member pairs.
+
+def _group_matrix(names: list[str], groups: list[str | re.Pattern]):
+    """Build a names x supernodes indicator matrix for merging by group."""
+    node_to_group = _assign_groups(set(names), groups)
+    supernodes = sorted(set(node_to_group.values()))
+    sn_idx = {s: i for i, s in enumerate(supernodes)}
+    rows = list(range(len(names)))
+    cols = [sn_idx[node_to_group[n]] for n in names]
+    data = [1.0] * len(names)
+    G = sp.csr_matrix((data, (rows, cols)), shape=(len(names), len(supernodes)))
+    return G, supernodes, node_to_group
+
+
+def _top_neighbors_sparse(A: sp.csr_matrix, k: int) -> sp.csr_matrix:
+    """Keep only the k heaviest entries per row, sparse throughout."""
+    A = A.tocsr()
+    indptr, data = A.indptr, A.data.copy()
+    for i in range(A.shape[0]):
+        start, end = indptr[i], indptr[i + 1]
+        row_len = end - start
+        if row_len <= k:
+            continue
+        row = data[start:end]
+        drop = np.argpartition(row, row_len - k)[: row_len - k]
+        row[drop] = 0
+    pruned = sp.csr_matrix((data, A.indices, indptr), shape=A.shape)
+    pruned.eliminate_zeros()
+    return pruned
+
+
+def build_variable_graph_from_incidence(
+    B: sp.csr_matrix,
+    constraints: list[str],
+    variables: list[str],
+    exclude: ExcludeSpec = None,
+    groups: GroupSpec = None,
+) -> VariableGraph:
+    """Build a VariableGraph from a constraint x variable incidence matrix.
+
+    Shared core for every source (MPS/LP, Gurobi, HiGHS, OR-Tools) — each source
+    only needs to build B; drop → group → co-occurrence (Bᵀ@B) happens here, sparse
+    throughout.
     """
-    node_to_group = _assign_groups(graph.nodes, groups)
-    new_nodes = set(node_to_group.values())
+    pred = _compile_exclude(exclude)
+    B, constraints, variables = _drop_from_incidence(B, constraints, variables, pred)
 
-    new_adj: dict[str, dict[str, int]] = defaultdict(dict)
-    for u, nbrs in graph.adj.items():
-        gu = node_to_group[u]
-        for v, w in nbrs.items():
-            gv = node_to_group[v]
-            if gu == gv:
-                continue
-            new_adj[gu][gv] = new_adj[gu].get(gv, 0) + w
+    if groups is not None:
+        G, variables, _ = _group_matrix(variables, groups)
+        B = B @ G
 
-    if isinstance(graph, VariableGraph):
-        new_graph = VariableGraph()
-        new_graph.nodes = new_nodes
-        new_graph.adj = defaultdict(dict, new_adj)
-        for n, g in node_to_group.items():
-            new_graph.constraint_count[g] = (
-                new_graph.constraint_count.get(g, 0) + graph.constraint_count.get(n, 0)
-            )
-    elif isinstance(graph, ConstraintGraph):
-        new_graph = ConstraintGraph()
-        new_graph.nodes = new_nodes
-        new_graph.adj = defaultdict(dict, new_adj)
-        for n, g in node_to_group.items():
-            new_graph.variable_count[g] = (
-                new_graph.variable_count.get(g, 0) + graph.variable_count.get(n, 0)
-            )
+    A = (B.T @ B).tocsr()
+    A.setdiag(0)
+    A.eliminate_zeros()
+    counts = np.asarray(B.sum(axis=0)).flatten()
+
+    graph = VariableGraph(A=A, node_list=variables)
+    graph.constraint_count = {v: int(c) for v, c in zip(variables, counts) if c > 0}
+    return graph
+
+
+def build_constraint_graph_from_incidence(
+    B: sp.csr_matrix,
+    constraints: list[str],
+    variables: list[str],
+    constraint_types: dict[str, str],
+    exclude: ExcludeSpec = None,
+    groups: GroupSpec = None,
+    name: str = "",
+) -> ConstraintGraph:
+    """Build a ConstraintGraph from a constraint x variable incidence matrix.
+
+    Shared core — see build_variable_graph_from_incidence. Co-occurrence = B@Bᵀ.
+    """
+    pred = _compile_exclude(exclude)
+    B, constraints, variables = _drop_from_incidence(B, constraints, variables, pred)
+    types = {r: constraint_types.get(r, "L") for r in constraints}
+
+    if groups is not None:
+        G, constraints, node_to_group = _group_matrix(constraints, groups)
+        B = (G.T @ B).tocsr()
+        grouped_types: dict[str, str] = {}
         for n in sorted(node_to_group):
             g = node_to_group[n]
-            if g not in new_graph.constraint_types and n in graph.constraint_types:
-                new_graph.constraint_types[g] = graph.constraint_types[n]
-        new_graph.name = graph.name
-    else:
-        new_graph = CooccurrenceGraph()
-        new_graph.nodes = new_nodes
-        new_graph.adj = defaultdict(dict, new_adj)
+            if g not in grouped_types and n in types:
+                grouped_types[g] = types[n]
+        types = grouped_types
 
-    return new_graph
+    A = (B @ B.T).tocsr()
+    A.setdiag(0)
+    A.eliminate_zeros()
+    counts = np.asarray(B.sum(axis=1)).flatten()
 
-
-def build_variable_graph(model, exclude: ExcludeSpec = None) -> VariableGraph:
-    """Build variable co-occurrence graph from an MPS model.
-
-    Nodes = variables. Edge weight = number of shared constraints.
-    Constraints matching exclude are skipped during edge building.
-    """
-    pred = _compile_exclude(exclude)
-    graph = VariableGraph()
-    graph.nodes = set(model.variables)
-
-    for row, row_coeffs in model.coefficients.items():
-        if row == model.objective:
-            continue
-        if pred is not None and pred(row):
-            continue
-        vars_in_row = list(row_coeffs.keys())
-        for var in vars_in_row:
-            graph.constraint_count[var] = graph.constraint_count.get(var, 0) + 1
-        for u, v in combinations(vars_in_row, 2):
-            if v in graph.adj[u]:
-                graph.adj[u][v] += 1
-                graph.adj[v][u] += 1
-            else:
-                graph.adj[u][v] = 1
-                graph.adj[v][u] = 1
-
+    graph = ConstraintGraph(A=A, node_list=constraints)
+    graph.variable_count = {c: int(v) for c, v in zip(constraints, counts) if v > 0}
+    graph.constraint_types = types
+    graph.name = name
     return graph
 
 
-def build_constraint_graph(model, exclude: ExcludeSpec = None) -> ConstraintGraph:
-    """Build constraint co-occurrence graph from an MPS model.
+def _build_incidence(model) -> tuple[sp.csr_matrix, list[str], list[str]]:
+    """Build sparse constraint x variable incidence matrix from a parsed MPS model."""
+    constraints = model.constraints
+    variables = model.variables
+    row_idx = {r: i for i, r in enumerate(constraints)}
+    col_idx = {v: j for j, v in enumerate(variables)}
 
-    Nodes = constraints. Edge weight = number of shared variables.
-    Variables matching exclude are skipped during edge building.
-    """
-    pred = _compile_exclude(exclude)
-    graph = ConstraintGraph()
+    rows, cols, data = [], [], []
+    for row in constraints:
+        for var in model.coefficients.get(row, {}):
+            rows.append(row_idx[row])
+            cols.append(col_idx[var])
+            data.append(1.0)
 
-    for row, sense in model.row_types.items():
-        if row == model.objective:
-            continue
-        graph.nodes.add(row)
-        graph.constraint_types[row] = sense
+    B = sp.csr_matrix(
+        (data, (rows, cols)) if data else ([], ([], [])),
+        shape=(len(constraints), len(variables)),
+    )
+    return B, constraints, variables
 
-    var_to_constrs: dict[str, list[str]] = defaultdict(list)
-    for row, row_coeffs in model.coefficients.items():
-        if row == model.objective or row not in graph.nodes:
-            continue
-        graph.variable_count[row] = len(row_coeffs)
-        for var in row_coeffs:
-            if pred is not None and pred(var):
-                continue
-            var_to_constrs[var].append(row)
 
-    for constrs in var_to_constrs.values():
-        for u, v in combinations(constrs, 2):
-            if v in graph.adj[u]:
-                graph.adj[u][v] += 1
-                graph.adj[v][u] += 1
-            else:
-                graph.adj[u][v] = 1
-                graph.adj[v][u] = 1
+def build_variable_graph(model, exclude: ExcludeSpec = None, groups: GroupSpec = None) -> VariableGraph:
+    """Build variable co-occurrence graph from a parsed MPS model."""
+    B, constraints, variables = _build_incidence(model)
+    return build_variable_graph_from_incidence(B, constraints, variables, exclude=exclude, groups=groups)
 
-    return graph
+
+def build_constraint_graph(model, exclude: ExcludeSpec = None, groups: GroupSpec = None) -> ConstraintGraph:
+    """Build constraint co-occurrence graph from a parsed MPS model."""
+    B, constraints, variables = _build_incidence(model)
+    types = {r: model.row_types.get(r, "L") for r in constraints}
+    return build_constraint_graph_from_incidence(
+        B, constraints, variables, types, exclude=exclude, groups=groups, name=model.name
+    )

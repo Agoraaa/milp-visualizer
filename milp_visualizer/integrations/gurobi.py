@@ -1,21 +1,34 @@
-"""Gurobi model integration: build co-occurrence graphs from live models."""
+"""Gurobi model integration: build co-occurrence graphs from live models.
+
+Builds a constraint x variable incidence matrix directly from the model, then
+hands off to the shared sparse-matmul builders in graph.py — no dict/combinations
+adjacency building here.
+"""
 
 from __future__ import annotations
 
-from collections import defaultdict
-from itertools import combinations
+import scipy.sparse as sp
 
-from ..graph import VariableGraph, ConstraintGraph, ExcludeSpec, _compile_exclude
+from ..graph import (
+    VariableGraph,
+    ConstraintGraph,
+    ExcludeSpec,
+    GroupSpec,
+    build_variable_graph_from_incidence,
+    build_constraint_graph_from_incidence,
+)
 from ..mps_parser import MPS
 
 
-def _gurobi_to_variable_graph(gurobi_model, exclude: ExcludeSpec = None) -> tuple[VariableGraph, MPS]:
+def _gurobi_to_variable_graph(
+    gurobi_model, exclude: ExcludeSpec = None, groups: GroupSpec = None
+) -> tuple[VariableGraph, MPS]:
     """Return (VariableGraph, pseudo-MPS) built from a live Gurobi model."""
     gurobi_model.update()
-    pred = _compile_exclude(exclude)
 
     gvars = gurobi_model.getVars()
     var_names = [v.VarName for v in gvars]
+    col_idx = {v: j for j, v in enumerate(var_names)}
     binary_vars: set[str] = set()
     integer_vars: set[str] = set()
     for v in gvars:
@@ -25,25 +38,23 @@ def _gurobi_to_variable_graph(gurobi_model, exclude: ExcludeSpec = None) -> tupl
         elif v.VType in ("I", "N"):
             integer_vars.add(v.VarName)
 
-    adj: dict[str, dict[str, int]] = defaultdict(dict)
-    nodes: set[str] = set(var_names)
-    constraint_count: dict[str, int] = {}
-
-    for constr in gurobi_model.getConstrs():
-        if pred is not None and pred(constr.ConstrName):
-            continue
+    constrs = gurobi_model.getConstrs()
+    constr_names = [c.ConstrName for c in constrs]
+    rows, cols, data = [], [], []
+    for i, constr in enumerate(constrs):
         row = gurobi_model.getRow(constr)
-        vars_in_row = [row.getVar(i).VarName for i in range(row.size())]
-        for var in vars_in_row:
-            constraint_count[var] = constraint_count.get(var, 0) + 1
-        for u, v in combinations(vars_in_row, 2):
-            if v in adj[u]:
-                adj[u][v] += 1
-                adj[v][u] += 1
-            else:
-                adj[u][v] = 1
-                adj[v][u] = 1
+        for k in range(row.size()):
+            rows.append(i)
+            cols.append(col_idx[row.getVar(k).VarName])
+            data.append(1.0)
+    B = sp.csr_matrix(
+        (data, (rows, cols)) if data else ([], ([], [])),
+        shape=(len(constrs), len(var_names)),
+    )
 
+    # quadratic constraints contribute extra co-occurrence signal as pseudo-rows
+    q_rows, q_cols, q_data = [], [], []
+    q_count = 0
     try:
         for qconstr in gurobi_model.getQConstrs():
             qrow = gurobi_model.getQCRow(qconstr)
@@ -54,17 +65,21 @@ def _gurobi_to_variable_graph(gurobi_model, exclude: ExcludeSpec = None) -> tupl
             for i in range(qrow.size()):
                 seen.add(qrow.getVar1(i).VarName)
                 seen.add(qrow.getVar2(i).VarName)
-            for u, v in combinations(seen, 2):
-                if v in adj[u]:
-                    adj[u][v] += 1
-                    adj[v][u] += 1
-                else:
-                    adj[u][v] = 1
-                    adj[v][u] = 1
+            for name in seen:
+                if name in col_idx:
+                    q_rows.append(q_count)
+                    q_cols.append(col_idx[name])
+                    q_data.append(1.0)
+            q_count += 1
     except Exception:
         pass
 
-    graph = VariableGraph(adj=adj, nodes=nodes, constraint_count=constraint_count)
+    if q_count:
+        Bq = sp.csr_matrix((q_data, (q_rows, q_cols)), shape=(q_count, len(var_names)))
+        B = sp.vstack([B, Bq]).tocsr()
+        constr_names = constr_names + [f"_qconstr{i}" for i in range(q_count)]
+
+    graph = build_variable_graph_from_incidence(B, constr_names, var_names, exclude=exclude, groups=groups)
     pseudo_mps = MPS(
         name=gurobi_model.ModelName,
         binary_vars=binary_vars,
@@ -73,43 +88,33 @@ def _gurobi_to_variable_graph(gurobi_model, exclude: ExcludeSpec = None) -> tupl
     return graph, pseudo_mps
 
 
-def _gurobi_to_constraint_graph(gurobi_model, exclude: ExcludeSpec = None) -> ConstraintGraph:
+def _gurobi_to_constraint_graph(
+    gurobi_model, exclude: ExcludeSpec = None, groups: GroupSpec = None
+) -> ConstraintGraph:
     """Return ConstraintGraph built from a live Gurobi model."""
     gurobi_model.update()
-    pred = _compile_exclude(exclude)
-
     _sense_map = {"<": "L", ">": "G", "=": "E"}
-    adj: dict[str, dict[str, int]] = defaultdict(dict)
-    nodes: set[str] = set()
-    variable_count: dict[str, int] = {}
-    constraint_types: dict[str, str] = {}
 
-    var_to_constrs: dict[str, list[str]] = defaultdict(list)
-    for constr in gurobi_model.getConstrs():
-        name = constr.ConstrName
-        nodes.add(name)
-        constraint_types[name] = _sense_map.get(constr.Sense, "L")
+    var_names = [v.VarName for v in gurobi_model.getVars()]
+    col_idx = {v: j for j, v in enumerate(var_names)}
+
+    constrs = gurobi_model.getConstrs()
+    constr_names = [c.ConstrName for c in constrs]
+    constraint_types = {c.ConstrName: _sense_map.get(c.Sense, "L") for c in constrs}
+
+    rows, cols, data = [], [], []
+    for i, constr in enumerate(constrs):
         row = gurobi_model.getRow(constr)
-        var_names = [row.getVar(i).VarName for i in range(row.size())]
-        variable_count[name] = len(var_names)
-        for var in var_names:
-            if pred is not None and pred(var):
-                continue
-            var_to_constrs[var].append(name)
+        for k in range(row.size()):
+            rows.append(i)
+            cols.append(col_idx[row.getVar(k).VarName])
+            data.append(1.0)
+    B = sp.csr_matrix(
+        (data, (rows, cols)) if data else ([], ([], [])),
+        shape=(len(constrs), len(var_names)),
+    )
 
-    for constrs in var_to_constrs.values():
-        for u, v in combinations(constrs, 2):
-            if v in adj[u]:
-                adj[u][v] += 1
-                adj[v][u] += 1
-            else:
-                adj[u][v] = 1
-                adj[v][u] = 1
-
-    return ConstraintGraph(
-        adj=adj,
-        nodes=nodes,
-        variable_count=variable_count,
-        constraint_types=constraint_types,
-        name=gurobi_model.ModelName,
+    return build_constraint_graph_from_incidence(
+        B, constr_names, var_names, constraint_types,
+        exclude=exclude, groups=groups, name=gurobi_model.ModelName,
     )
