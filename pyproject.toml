@@ -5,6 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "milp_visualizer"
 version = "0.1.0"
+description = "Visualize mixed integer linear program using graph embedding."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "Mert Ali Yiğit", email = "milp_visualizer@threesigmas.com" },
+]
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "numpy>=2.0",
