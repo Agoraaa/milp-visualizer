@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "milp-visualizer"
+name = "milp_visualizer"
 version = "0.1.0"
 requires-python = ">=3.10,<3.14"
 dependencies = [
