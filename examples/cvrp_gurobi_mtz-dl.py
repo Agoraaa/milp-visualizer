@@ -122,7 +122,7 @@ def build_model(instance: CVRPInstance, *, formulation: str = "mtz") -> gp.Model
 # ---------------------------------------------------------------------------
 
 INSTANCE_SEED = 2640
-N_CUSTOMERS = 60
+N_CUSTOMERS = 30
 N_VEHICLES = 2
 
 
