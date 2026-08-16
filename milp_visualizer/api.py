@@ -21,30 +21,32 @@ def visualize(
     *,
     mode: str = "variables",
     exclude: ExcludeSpec = None,
+    groups: GroupSpec = None,
     max_neighbors: int | None = None,
     label_nodes: bool | int | None = None,
     node_categories: dict[str, str] | None = None,
-    groups: GroupSpec = None,
 ) -> None:
-    """Visualize a MILP model's co-occurrence structure.
+    """Visualize a MILP model.
 
     Args:
-        source: one of —
+        source: one of
             str | Path       : path to an MPS or LP file
-            gurobipy.Model   : live Gurobi model (need not be solved)
-            highspy.Highs    : live HiGHS model
-            pywraplp.Solver  : live OR-Tools model
-        output: output file path — extension determines format: ".png" (matplotlib) or ".html" (Plotly interactive)
+            gurobipy.Model   : Gurobi model (need not be solved)
+            highspy.Highs    : HiGHS model
+            pywraplp.Solver  : OR-Tools model
+        output: output file path, extension can be ".html" (recommended) or ".png"
         mode: "variables" (default) or "constraints"
-        exclude: nodes to drop before graph construction —
-            str              : prefix match, or glob ('*'/'?') if it contains either
-            list/set         : mix of the above
+        exclude: variables/constraints to ignore
+            str | list       : prefix match (e.g. "slack_"), or glob
+        groups: list of str - related variables/constraints grouped together and
+            drawn as one node
+            prefix match       : e.g. "x[" groups every x[...] together
+            glob ('*'/'?')     : e.g. "x[?,*]" partitions by the '*'-captured
+                integer, all variables with second integer having 0 as one group,
+                having 1 as another group etc.
         max_neighbors: max edges drawn per node
         label_nodes: annotate node names (default: auto for <=50 nodes)
         node_categories: {node_name: hex_color} override
-        groups: list of str — prefix match, or glob ('*'/'?') to partition by captured
-            integer — matched nodes collapsed into one super-node before embedding;
-            super-node name = first matched node
     """
     if mode not in _VALID_MODES:
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
