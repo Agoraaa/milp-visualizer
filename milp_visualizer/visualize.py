@@ -103,7 +103,7 @@ def _visualize_variables(
     sizes = 30 + 120 * (counts / max_count)
 
     name = (model.name if model else None) or "MILP"
-    title = f"{name} — variable co-occurrence (GGVec + UMAP)"
+    title = f"{name}"
     draw_adj = _top_neighbors(graph, max_neighbors) if max_neighbors is not None else graph.to_adj()
     auto_label = label_nodes if label_nodes is not None else (True if graph.num_nodes <= 50 else False)
 
@@ -149,7 +149,7 @@ def _visualize_constraints(
     sizes = 30 + 120 * (counts / max_count)
 
     name = getattr(graph, "name", None) or "MILP"
-    title = f"{name} — constraint co-occurrence (GGVec + UMAP)"
+    title = f"{name}"
     draw_adj = _top_neighbors(graph, max_neighbors) if max_neighbors is not None else graph.to_adj()
     auto_label = label_nodes if label_nodes is not None else (True if graph.num_nodes <= 50 else False)
 
